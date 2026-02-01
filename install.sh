@@ -67,6 +67,9 @@ elif [ -f "/Applications/Transmission Remote GUI.app/Contents/Resources/transgui
     echo "Copied icon from Transmission Remote GUI"
 fi
 
+# Remove Assets.car which overrides the icon with default AppleScript icon
+rm -f "$APP_PATH/Contents/Resources/Assets.car"
+
 # Register with Launch Services
 /System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister -f "$APP_PATH"
 
