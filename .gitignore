@@ -17,3 +17,6 @@ venv/
 
 # Logs
 *.log
+
+# Personal config (use config.json.example as template)
+config.json

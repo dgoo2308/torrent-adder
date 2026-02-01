@@ -109,17 +109,17 @@ def ask_text_input(prompt, default="", title="Torrent Adder"):
 
 def load_config():
     config_paths = [
-        Path(__file__).parent / "config.json",
         Path.home() / ".config" / "torrent-adder" / "config.json",
+        Path(__file__).parent / "config.json",
     ]
     for path in config_paths:
         if path.exists():
             with open(path) as f:
                 return json.load(f)
     return {
-        "host": "192.168.1.205", "port": 9091,
+        "host": "192.168.1.100", "port": 9091,
         "username": "", "password": "",
-        "api_host": "192.168.1.205", "api_port": 8765
+        "api_host": "192.168.1.100", "api_port": 8765
     }
 
 

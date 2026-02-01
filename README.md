@@ -7,51 +7,55 @@ A simple macOS app for adding torrents to a remote Transmission server with smar
 - **Native macOS dialogs** - Uses AppleScript for clean, native UI
 - **Supports .torrent files and magnet links** - Open files or click magnet links in browser
 - **Smart TV show detection** - Automatically suggests the right TV show folder based on torrent name
+- **New TV Show folder** - Create new TV show directories on the fly
 - **Directory API** - Fetches available directories from a remote server
 - **Auto-start torrents** - Torrents start downloading immediately
 
 ## Installation
 
-### macOS App
-
-The app is created using AppleScript and lives in `/Applications/TorrentAdder.app`.
-
-To rebuild the app:
+### Quick Install
 
 ```bash
-osacompile -o /Applications/TorrentAdder.app -e '
-on open location theURL
-    do shell script "/usr/bin/python3 /Users/dgoo2308/git/torrent-adder/torrent_adder.py " & quoted form of theURL
-end open location
-
-on open theFiles
-    repeat with theFile in theFiles
-        set filePath to POSIX path of theFile
-        do shell script "/usr/bin/python3 /Users/dgoo2308/git/torrent-adder/torrent_adder.py " & quoted form of filePath
-    end repeat
-end open
-
-on run
-    display dialog "Drop a .torrent file on this app, use Open With, or click a magnet link" with title "Torrent Adder" buttons {"OK"} with icon note
-end run
-'
+git clone https://github.com/dgoo2308/torrent-adder.git
+cd torrent-adder
+./install.sh
 ```
 
-Then register it:
-
+Then edit your config:
 ```bash
-# Add bundle ID and URL scheme
-plutil -replace CFBundleIdentifier -string "com.nellika.torrentadder" /Applications/TorrentAdder.app/Contents/Info.plist
-plutil -replace CFBundleURLTypes -json '[{"CFBundleURLName":"Magnet Link","CFBundleURLSchemes":["magnet"]}]' /Applications/TorrentAdder.app/Contents/Info.plist
-plutil -replace CFBundleDocumentTypes -json '[{"CFBundleTypeName":"BitTorrent File","CFBundleTypeRole":"Viewer","CFBundleTypeExtensions":["torrent"],"LSHandlerRank":"Owner"}]' /Applications/TorrentAdder.app/Contents/Info.plist
-
-# Register with Launch Services
-/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister -f /Applications/TorrentAdder.app
+nano ~/.config/torrent-adder/config.json
 ```
 
-### Server-side API (LibreELEC/Linux)
+### Manual Installation
 
-The directory API runs on the server hosting the media files. Install it as a systemd service:
+1. Copy `torrent_adder.py` to `~/.local/share/torrent-adder/`
+2. Copy `config.json.example` to `~/.config/torrent-adder/config.json` and edit
+3. Run the AppleScript commands in `install.sh` to create the app
+
+## Configuration
+
+Edit `~/.config/torrent-adder/config.json`:
+
+```json
+{
+    "host": "192.168.1.100",
+    "port": 9091,
+    "username": "",
+    "password": "",
+    "api_host": "192.168.1.100",
+    "api_port": 8765
+}
+```
+
+- `host` / `port` - Transmission RPC server
+- `username` / `password` - Transmission authentication (leave empty if none)
+- `api_host` / `api_port` - Directory API server
+
+## Server-side API (LibreELEC/Linux)
+
+The directory API runs on the server hosting the media files. See `server/torrent-api.py`.
+
+Install as a systemd service:
 
 ```bash
 # Copy torrent-api.py to /storage/ (or your preferred location)
@@ -79,25 +83,6 @@ systemctl enable torrent-api
 systemctl start torrent-api
 ```
 
-## Configuration
-
-Edit `config.json`:
-
-```json
-{
-    "host": "192.168.1.205",
-    "port": 9091,
-    "username": "",
-    "password": "",
-    "api_host": "192.168.1.205",
-    "api_port": 8765
-}
-```
-
-- `host` / `port` - Transmission RPC server
-- `username` / `password` - Transmission authentication (leave empty if none)
-- `api_host` / `api_port` - Directory API server
-
 ## Usage
 
 ### Opening .torrent files
@@ -119,6 +104,10 @@ For TV shows with names like `Show.Name.S01E02.1080p...`, the app will:
 2. Search for a matching folder in your TV Shows directory
 3. Pre-select it and ask for confirmation
 
+### New TV Show folder
+
+Select "── New TV Show Folder ──" to create a new directory. The folder name is auto-suggested from the torrent name.
+
 ## API Endpoints
 
 The directory API provides:
@@ -131,7 +120,7 @@ The directory API provides:
 ## Requirements
 
 - macOS (for the GUI app)
-- Python 3.x
+- Python 3.x (uses only standard library)
 - Transmission daemon with RPC enabled
 - Network access to Transmission and the directory API
 
