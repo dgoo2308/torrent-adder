@@ -45,7 +45,7 @@ on open theFiles
 end open
 
 on run
-    display dialog "Drop a .torrent file on this app, use Open With, or click a magnet link" with title "Torrent Adder" buttons {"OK"} with icon note
+    do shell script "exec '$INSTALL_DIR/torrent_adder.py'"
 end run
 '
 

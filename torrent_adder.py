@@ -179,7 +179,7 @@ def ask_yes_no_proxy(prompt, proxy_default=False, title="Torrent Adder"):
 
 
 def ask_with_proxy_option(prompt, proxy_enabled=False, title="Torrent Adder"):
-    """Show dialog with proxy toggle option"""
+    """Show dialog with proxy toggle option - returns (confirmed, use_proxy)"""
     if proxy_enabled:
         buttons = '{"Cancel", "No Proxy", "Use Proxy"}'
         default = '"Use Proxy"'
@@ -197,6 +197,99 @@ def ask_with_proxy_option(prompt, proxy_enabled=False, title="Torrent Adder"):
     if cancelled:
         return None, False
     return True, use_proxy
+
+
+def show_settings_dialog(config):
+    """Show settings dialog when app is launched directly (no torrent file)"""
+    proxy = config.get("proxy", {})
+    proxy_configured = proxy.get("host") and proxy.get("port")
+    proxy_enabled = proxy.get("enabled", False)
+    
+    # Build status message
+    status_lines = [
+        f"Transmission: {config.get('host', 'not set')}:{config.get('port', 9091)}",
+        f"Directory API: {config.get('api_host', 'not set')}:{config.get('api_port', 8765)}",
+    ]
+    
+    if proxy_configured:
+        proxy_status = "ON" if proxy_enabled else "OFF"
+        status_lines.append(f"Proxy: {proxy.get('host')}:{proxy.get('port')} ({proxy_status})")
+    else:
+        status_lines.append("Proxy: not configured")
+    
+    status = "\\n".join(status_lines)
+    
+    # Show dialog with options
+    if proxy_configured:
+        if proxy_enabled:
+            buttons = '{"Close", "Test Connection", "Disable Proxy"}'
+        else:
+            buttons = '{"Close", "Test Connection", "Enable Proxy"}'
+    else:
+        buttons = '{"Close", "Test Connection"}'
+    
+    script = f'display dialog "TorrentAdder Settings\\n\\n{status}" with title "Torrent Adder" buttons {buttons} default button "Close"'
+    result, code = osascript(script)
+    
+    if code != 0 or "Close" in result:
+        return
+    
+    if "Enable Proxy" in result:
+        # Update config to enable proxy
+        update_proxy_setting(config, True)
+        show_info("Proxy enabled.\\nRestart the app to apply.")
+    elif "Disable Proxy" in result:
+        # Update config to disable proxy
+        update_proxy_setting(config, False)
+        show_info("Proxy disabled.\\nRestart the app to apply.")
+    elif "Test" in result:
+        # Test connection
+        test_connection(config)
+
+
+def update_proxy_setting(config, enabled):
+    """Update proxy enabled setting in config file"""
+    config_path = Path.home() / ".config" / "torrent-adder" / "config.json"
+    if config_path.exists():
+        with open(config_path) as f:
+            cfg = json.load(f)
+        
+        if "proxy" not in cfg:
+            cfg["proxy"] = {"host": "127.0.0.1", "port": 1080}
+        cfg["proxy"]["enabled"] = enabled
+        
+        with open(config_path, 'w') as f:
+            json.dump(cfg, f, indent=4)
+
+
+def test_connection(config):
+    """Test connection to Transmission and API"""
+    proxy = config.get("proxy") if config.get("proxy", {}).get("enabled") else None
+    results = []
+    
+    # Test API
+    try:
+        api_host = config.get("api_host", config["host"])
+        api_port = config.get("api_port", 8765)
+        body, _ = http_request(f"http://{api_host}:{api_port}/", proxy=proxy, timeout=5)
+        results.append("✓ Directory API: OK")
+    except Exception as e:
+        results.append(f"✗ Directory API: {e}")
+    
+    # Test Transmission
+    try:
+        client = TransmissionClient(
+            config["host"], config["port"],
+            config.get("username"), config.get("password"),
+            proxy=proxy
+        )
+        client._request("session-get")
+        results.append("✓ Transmission: OK")
+    except Exception as e:
+        results.append(f"✗ Transmission: {e}")
+    
+    proxy_status = "via proxy" if proxy else "direct"
+    show_info(f"Connection Test ({proxy_status})\\n\\n" + "\\n".join(results))
 
 
 def ask_text_input(prompt, default="", title="Torrent Adder"):
@@ -360,9 +453,12 @@ def detect_tv_show(name, tv_shows):
 def main():
     torrent_source = sys.argv[1] if len(sys.argv) > 1 else None
     
+    config = load_config()
+    
+    # If no torrent provided, show settings dialog
     if not torrent_source:
-        show_error("No torrent file or magnet link provided")
-        sys.exit(1)
+        show_settings_dialog(config)
+        sys.exit(0)
     
     is_magnet = torrent_source.startswith("magnet:")
     
@@ -372,10 +468,9 @@ def main():
             show_error(f"File not found:\\n{torrent_source}")
             sys.exit(1)
     
-    config = load_config()
     api_host = config.get("api_host", config["host"])
     api_port = config.get("api_port", 8765)
-    proxy = config.get("proxy")
+    proxy = config.get("proxy") if config.get("proxy", {}).get("enabled") else None
     
     # Fetch directories
     dir_options, tv_shows, tv_base = fetch_directories(api_host, api_port, proxy)
@@ -459,26 +554,6 @@ def main():
     if not selected_path:
         show_error("Could not find selected directory")
         sys.exit(1)
-    
-    # Ask about proxy if configured
-    proxy_configured = proxy and proxy.get("host") and proxy.get("port")
-    use_proxy = proxy and proxy.get("enabled", False)
-    
-    if proxy_configured:
-        # Show proxy toggle dialog
-        proxy_status = "ON" if use_proxy else "OFF"
-        confirm, use_proxy = ask_with_proxy_option(
-            f"Proxy is currently {proxy_status}\\n\\nAdd torrent to:\\n{selected_path}",
-            proxy_enabled=use_proxy
-        )
-        if confirm is None:
-            sys.exit(0)
-        
-        # Update proxy setting for this request
-        if use_proxy:
-            proxy = {"enabled": True, "host": proxy["host"], "port": proxy["port"]}
-        else:
-            proxy = None
     
     # Add torrent
     try:
