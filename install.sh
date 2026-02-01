@@ -58,10 +58,12 @@ plutil -replace CFBundleURLTypes -json '[{"CFBundleURLName":"Magnet Link","CFBun
 # Register for .torrent files
 plutil -replace CFBundleDocumentTypes -json '[{"CFBundleTypeName":"BitTorrent File","CFBundleTypeRole":"Viewer","CFBundleTypeExtensions":["torrent"],"LSHandlerRank":"Owner"}]' "$APP_PATH/Contents/Info.plist"
 
-# Copy icon if Transmission Remote GUI is installed
-ICON_SOURCE="/Applications/Transmission Remote GUI.app/Contents/Resources/transgui.icns"
-if [ -f "$ICON_SOURCE" ]; then
-    cp "$ICON_SOURCE" "$APP_PATH/Contents/Resources/droplet.icns"
+# Copy icon - prefer bundled, fallback to Transmission Remote GUI
+if [ -f "$SCRIPT_DIR/resources/icon.icns" ]; then
+    cp "$SCRIPT_DIR/resources/icon.icns" "$APP_PATH/Contents/Resources/droplet.icns"
+    echo "Copied bundled icon"
+elif [ -f "/Applications/Transmission Remote GUI.app/Contents/Resources/transgui.icns" ]; then
+    cp "/Applications/Transmission Remote GUI.app/Contents/Resources/transgui.icns" "$APP_PATH/Contents/Resources/droplet.icns"
     echo "Copied icon from Transmission Remote GUI"
 fi
 
