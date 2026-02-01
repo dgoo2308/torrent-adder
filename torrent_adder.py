@@ -16,33 +16,99 @@ import re
 from pathlib import Path
 
 
+def http_request(url, data=None, headers=None, proxy=None, timeout=30):
+    """Make HTTP request, optionally through SOCKS5 proxy using curl"""
+    headers = headers or {}
+    
+    if proxy and proxy.get("enabled"):
+        # Use curl for SOCKS5 proxy support
+        proxy_url = f"socks5://{proxy['host']}:{proxy['port']}"
+        
+        cmd = ["curl", "-s", "-i", "--max-time", str(timeout), "--proxy", proxy_url]
+        
+        for key, value in headers.items():
+            cmd.extend(["-H", f"{key}: {value}"])
+        
+        if data:
+            cmd.extend(["-X", "POST", "-d", data.decode() if isinstance(data, bytes) else data])
+        
+        cmd.append(url)
+        
+        result = subprocess.run(cmd, capture_output=True, text=True)
+        
+        if result.returncode != 0:
+            raise Exception(f"Curl error: {result.stderr}")
+        
+        # Parse response - split headers and body
+        parts = result.stdout.split("\r\n\r\n", 1)
+        header_lines = parts[0].split("\r\n")
+        body = parts[1] if len(parts) > 1 else ""
+        
+        # Parse status code
+        status_line = header_lines[0]
+        status_code = int(status_line.split()[1])
+        
+        # Parse headers
+        resp_headers = {}
+        for line in header_lines[1:]:
+            if ": " in line:
+                k, v = line.split(": ", 1)
+                resp_headers[k.lower()] = v
+        
+        if status_code == 409:
+            raise HTTPError409(resp_headers.get("x-transmission-session-id", ""))
+        elif status_code >= 400:
+            raise Exception(f"HTTP {status_code}")
+        
+        return body, resp_headers
+    else:
+        # Use urllib for direct connections
+        req = urllib.request.Request(url, data=data, headers=headers)
+        try:
+            with urllib.request.urlopen(req, timeout=timeout) as resp:
+                return resp.read().decode(), dict(resp.headers)
+        except urllib.error.HTTPError as e:
+            if e.code == 409:
+                raise HTTPError409(e.headers.get("X-Transmission-Session-Id", ""))
+            raise
+
+
+class HTTPError409(Exception):
+    """Custom exception for 409 responses with session ID"""
+    def __init__(self, session_id):
+        self.session_id = session_id
+        super().__init__("409 Conflict")
+
+
 class TransmissionClient:
-    def __init__(self, host, port, username=None, password=None):
+    def __init__(self, host, port, username=None, password=None, proxy=None):
         self.url = f"http://{host}:{port}/transmission/rpc"
         self.session_id = None
         self.auth_header = None
+        self.proxy = proxy
         if username and password:
             credentials = base64.b64encode(f"{username}:{password}".encode()).decode()
             self.auth_header = f"Basic {credentials}"
     
     def _request(self, method, arguments=None):
-        payload = json.dumps({"method": method, "arguments": arguments or {}}).encode()
+        payload = json.dumps({"method": method, "arguments": arguments or {}})
         headers = {"Content-Type": "application/json"}
         if self.auth_header:
             headers["Authorization"] = self.auth_header
         if self.session_id:
             headers["X-Transmission-Session-Id"] = self.session_id
-        req = urllib.request.Request(self.url, data=payload, headers=headers)
+        
         try:
-            with urllib.request.urlopen(req, timeout=30) as resp:
-                return json.loads(resp.read().decode())
-        except urllib.error.HTTPError as e:
-            if e.code == 409:
-                self.session_id = e.headers.get("X-Transmission-Session-Id")
-                return self._request(method, arguments)
-            raise Exception(f"HTTP {e.code}: {e.reason}")
-        except urllib.error.URLError as e:
-            raise Exception(f"Connection error: {e.reason}")
+            response, resp_headers = http_request(
+                self.url, 
+                data=payload.encode(), 
+                headers=headers, 
+                proxy=self.proxy
+            )
+            return json.loads(response)
+        except HTTPError409 as e:
+            self.session_id = e.session_id
+            return self._request(method, arguments)
         except Exception as e:
             raise Exception(f"Request failed: {e}")
     
@@ -123,30 +189,33 @@ def load_config():
     }
 
 
-def fetch_directories(api_host, api_port):
+def fetch_directories(api_host, api_port, proxy=None):
     """Fetch directory options from the API, returns (dirs_list, tv_shows_list, tv_base_path)"""
     dirs = []
     tv_shows = []
     tv_base = "/media/lacie/Media/TV Shows"
     
     try:
-        with urllib.request.urlopen(f"http://{api_host}:{api_port}/movies", timeout=5) as r:
-            data = json.loads(r.read().decode())
-            dirs.append(("Movies", data["path"]))
+        # Movies
+        body, _ = http_request(f"http://{api_host}:{api_port}/movies", proxy=proxy, timeout=5)
+        data = json.loads(body)
+        dirs.append(("Movies", data["path"]))
         
-        with urllib.request.urlopen(f"http://{api_host}:{api_port}/downloads", timeout=5) as r:
-            data = json.loads(r.read().decode())
-            dirs.append(("Downloads", data["path"]))
+        # Downloads
+        body, _ = http_request(f"http://{api_host}:{api_port}/downloads", proxy=proxy, timeout=5)
+        data = json.loads(body)
+        dirs.append(("Downloads", data["path"]))
         
         # Add special options
         dirs.append(("── New TV Show Folder ──", "__NEW_TV__"))
         
-        with urllib.request.urlopen(f"http://{api_host}:{api_port}/tvshows", timeout=5) as r:
-            data = json.loads(r.read().decode())
-            tv_base = data["base"]
-            for show in data["shows"]:
-                dirs.append((f"TV: {show}", f"{tv_base}/{show}"))
-                tv_shows.append(show.lower())
+        # TV shows
+        body, _ = http_request(f"http://{api_host}:{api_port}/tvshows", proxy=proxy, timeout=5)
+        data = json.loads(body)
+        tv_base = data["base"]
+        for show in data["shows"]:
+            dirs.append((f"TV: {show}", f"{tv_base}/{show}"))
+            tv_shows.append(show.lower())
     except:
         dirs = [
             ("Movies", "/media/lacie/Media/Movies"),
@@ -267,9 +336,10 @@ def main():
     config = load_config()
     api_host = config.get("api_host", config["host"])
     api_port = config.get("api_port", 8765)
+    proxy = config.get("proxy")
     
     # Fetch directories
-    dir_options, tv_shows, tv_base = fetch_directories(api_host, api_port)
+    dir_options, tv_shows, tv_base = fetch_directories(api_host, api_port, proxy)
     display_names = [d[0] for d in dir_options]
     
     # Get torrent name
@@ -355,7 +425,8 @@ def main():
     try:
         client = TransmissionClient(
             config["host"], config["port"],
-            config.get("username"), config.get("password")
+            config.get("username"), config.get("password"),
+            proxy=proxy
         )
         result = client.add_torrent(torrent_source, selected_path)
         

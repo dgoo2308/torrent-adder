@@ -1,10 +1,7 @@
 # TODO
 
 ## Features
-- [ ] Add SOCKS5 proxy support
-  - Checkbox in dialog to use proxy
-  - Proxy settings in config.json (host, port, username, password)
-  - Apply to both Transmission RPC and directory API calls
+- [ ] Checkbox in dialog to toggle proxy on/off (currently uses config only)
 
 ## Done
 - [x] Make self-contained install script
@@ -13,3 +10,4 @@
 - [x] Script in ~/.local/share/torrent-adder/
 - [x] Example config file
 - [x] Server-side API in separate directory
+- [x] Add SOCKS5 proxy support (via curl)
