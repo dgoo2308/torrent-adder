@@ -43,13 +43,24 @@ Edit `~/.config/torrent-adder/config.json`:
     "username": "",
     "password": "",
     "api_host": "192.168.1.100",
-    "api_port": 8765
+    "api_port": 8765,
+    "proxy": {
+        "enabled": false,
+        "host": "127.0.0.1",
+        "port": 1080
+    }
 }
 ```
 
-- `host` / `port` - Transmission RPC server
-- `username` / `password` - Transmission authentication (leave empty if none)
-- `api_host` / `api_port` - Directory API server
+| Setting | Description |
+|---------|-------------|
+| `host` / `port` | Transmission RPC server |
+| `username` / `password` | Transmission authentication (leave empty if none) |
+| `api_host` / `api_port` | Directory API server |
+| `proxy.enabled` | Enable SOCKS5 proxy |
+| `proxy.host` / `proxy.port` | SOCKS5 proxy address |
+
+**Note:** The proxy applies to both Transmission RPC and Directory API connections.
 
 ## Server-side API (LibreELEC/Linux)
 
