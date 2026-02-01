@@ -94,6 +94,19 @@ def ask_yes_no(prompt, title="Torrent Adder"):
     return "Yes" in result
 
 
+def ask_text_input(prompt, default="", title="Torrent Adder"):
+    """Show text input dialog, returns entered text or None if cancelled"""
+    script = f'display dialog "{prompt}" with title "{title}" default answer "{default}" buttons {{"Cancel", "OK"}} default button "OK"'
+    result, code = osascript(script)
+    if code != 0:
+        return None
+    # Extract text from result like "button returned:OK, text returned:Some Text"
+    match = re.search(r'text returned:(.*)$', result)
+    if match:
+        return match.group(1).strip()
+    return None
+
+
 def load_config():
     config_paths = [
         Path(__file__).parent / "config.json",
@@ -111,9 +124,10 @@ def load_config():
 
 
 def fetch_directories(api_host, api_port):
-    """Fetch directory options from the API, returns (dirs_list, tv_shows_list)"""
+    """Fetch directory options from the API, returns (dirs_list, tv_shows_list, tv_base_path)"""
     dirs = []
     tv_shows = []
+    tv_base = "/media/lacie/Media/TV Shows"
     
     try:
         with urllib.request.urlopen(f"http://{api_host}:{api_port}/movies", timeout=5) as r:
@@ -123,6 +137,9 @@ def fetch_directories(api_host, api_port):
         with urllib.request.urlopen(f"http://{api_host}:{api_port}/downloads", timeout=5) as r:
             data = json.loads(r.read().decode())
             dirs.append(("Downloads", data["path"]))
+        
+        # Add special options
+        dirs.append(("── New TV Show Folder ──", "__NEW_TV__"))
         
         with urllib.request.urlopen(f"http://{api_host}:{api_port}/tvshows", timeout=5) as r:
             data = json.loads(r.read().decode())
@@ -134,9 +151,10 @@ def fetch_directories(api_host, api_port):
         dirs = [
             ("Movies", "/media/lacie/Media/Movies"),
             ("Downloads", "/media/lacie/Downloads"),
+            ("── New TV Show Folder ──", "__NEW_TV__"),
         ]
     
-    return dirs, tv_shows
+    return dirs, tv_shows, tv_base
 
 
 def bdecode_string(data, idx):
@@ -251,7 +269,7 @@ def main():
     api_port = config.get("api_port", 8765)
     
     # Fetch directories
-    dir_options, tv_shows = fetch_directories(api_host, api_port)
+    dir_options, tv_shows, tv_base = fetch_directories(api_host, api_port)
     display_names = [d[0] for d in dir_options]
     
     # Get torrent name
@@ -307,11 +325,27 @@ def main():
         if not selected:
             sys.exit(0)
         
-        # Find the actual path
-        for name, path in dir_options:
-            if name == selected:
-                selected_path = path
-                break
+        # Handle special options
+        if selected == "── New TV Show Folder ──":
+            # Extract suggested folder name from torrent
+            suggested_name = ""
+            tv_pattern = re.match(r'^(.+?)[.\s][Ss]\d{1,2}[Ee]\d{1,2}', torrent_name)
+            if tv_pattern:
+                suggested_name = tv_pattern.group(1).replace('.', ' ').strip()
+            
+            folder_name = ask_text_input(
+                "Enter new TV show folder name:",
+                default=suggested_name
+            )
+            if not folder_name:
+                sys.exit(0)
+            selected_path = f"{tv_base}/{folder_name}"
+        else:
+            # Find the actual path
+            for name, path in dir_options:
+                if name == selected:
+                    selected_path = path
+                    break
     
     if not selected_path:
         show_error("Could not find selected directory")
