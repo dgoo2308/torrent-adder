@@ -70,8 +70,15 @@ fi
 # Register with Launch Services
 /System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister -f "$APP_PATH"
 
-# Touch to refresh
+# Touch to refresh and clear icon cache
 touch "$APP_PATH"
+touch "$APP_PATH/Contents/Info.plist"
+touch "$APP_PATH/Contents/Resources/droplet.icns"
+
+# Try to clear icon cache (may require restart/logout to take full effect)
+rm -rf ~/Library/Caches/com.apple.iconservices.store 2>/dev/null || true
+killall Finder 2>/dev/null || true
+killall Dock 2>/dev/null || true
 
 echo ""
 echo "✓ TorrentAdder installed successfully!"

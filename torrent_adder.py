@@ -160,6 +160,45 @@ def ask_yes_no(prompt, title="Torrent Adder"):
     return "Yes" in result
 
 
+def ask_yes_no_proxy(prompt, proxy_default=False, title="Torrent Adder"):
+    """Show yes/no dialog with proxy checkbox, returns (choice, use_proxy)"""
+    checked = "true" if proxy_default else "false"
+    script = f'''
+    tell application "System Events"
+        activate
+        set dialogResult to display dialog "{prompt}" with title "{title}" buttons {{"Choose Other", "Yes"}} default button "Yes"
+    end tell
+    return button returned of dialogResult
+    '''
+    # AppleScript dialogs don't support checkboxes easily, use a different approach
+    # Show a second quick dialog if proxy is configured
+    result, code = osascript(f'display dialog "{prompt}" with title "{title}" buttons {{"Choose Other", "Yes"}} default button "Yes"')
+    if code != 0:
+        return None, proxy_default
+    return "Yes" in result, proxy_default
+
+
+def ask_with_proxy_option(prompt, proxy_enabled=False, title="Torrent Adder"):
+    """Show dialog with proxy toggle option"""
+    if proxy_enabled:
+        buttons = '{"Cancel", "No Proxy", "Use Proxy"}'
+        default = '"Use Proxy"'
+    else:
+        buttons = '{"Cancel", "Use Proxy", "Direct"}'
+        default = '"Direct"'
+    
+    script = f'display dialog "{prompt}" with title "{title}" buttons {buttons} default button {default}'
+    result, code = osascript(script)
+    if code != 0:
+        return None, False
+    
+    use_proxy = "Proxy" in result and "No Proxy" not in result
+    cancelled = "Cancel" in result
+    if cancelled:
+        return None, False
+    return True, use_proxy
+
+
 def ask_text_input(prompt, default="", title="Torrent Adder"):
     """Show text input dialog, returns entered text or None if cancelled"""
     script = f'display dialog "{prompt}" with title "{title}" default answer "{default}" buttons {{"Cancel", "OK"}} default button "OK"'
@@ -420,6 +459,26 @@ def main():
     if not selected_path:
         show_error("Could not find selected directory")
         sys.exit(1)
+    
+    # Ask about proxy if configured
+    proxy_configured = proxy and proxy.get("host") and proxy.get("port")
+    use_proxy = proxy and proxy.get("enabled", False)
+    
+    if proxy_configured:
+        # Show proxy toggle dialog
+        proxy_status = "ON" if use_proxy else "OFF"
+        confirm, use_proxy = ask_with_proxy_option(
+            f"Proxy is currently {proxy_status}\\n\\nAdd torrent to:\\n{selected_path}",
+            proxy_enabled=use_proxy
+        )
+        if confirm is None:
+            sys.exit(0)
+        
+        # Update proxy setting for this request
+        if use_proxy:
+            proxy = {"enabled": True, "host": proxy["host"], "port": proxy["port"]}
+        else:
+            proxy = None
     
     # Add torrent
     try:
