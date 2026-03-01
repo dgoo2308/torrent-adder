@@ -81,11 +81,12 @@ class HTTPError409(Exception):
 
 
 class TransmissionClient:
-    def __init__(self, host, port, username=None, password=None, proxy=None):
-        self.url = f"http://{host}:{port}/transmission/rpc"
+    def __init__(self, host=None, port=None, username=None, password=None, proxy=None, url=None, timeout=30):
+        self.url = url or f"http://{host}:{port}/transmission/rpc"
         self.session_id = None
         self.auth_header = None
         self.proxy = proxy
+        self.timeout = timeout
         if username and password:
             credentials = base64.b64encode(f"{username}:{password}".encode()).decode()
             self.auth_header = f"Basic {credentials}"
@@ -103,7 +104,8 @@ class TransmissionClient:
                 self.url, 
                 data=payload.encode(), 
                 headers=headers, 
-                proxy=self.proxy
+                proxy=self.proxy,
+                timeout=self.timeout
             )
             return json.loads(response)
         except HTTPError409 as e:
@@ -211,6 +213,10 @@ def show_settings_dialog(config):
         f"Directory API: {config.get('api_host', 'not set')}:{config.get('api_port', 8765)}",
     ]
     
+    remote = config.get("remote", {})
+    if remote.get("transmission_url"):
+        status_lines.append(f"Remote: {remote['transmission_url']}")
+    
     if proxy_configured:
         proxy_status = "ON" if proxy_enabled else "OFF"
         status_lines.append(f"Proxy: {proxy.get('host')}:{proxy.get('port')} ({proxy_status})")
@@ -263,20 +269,20 @@ def update_proxy_setting(config, enabled):
 
 
 def test_connection(config):
-    """Test connection to Transmission and API"""
+    """Test connection to Transmission and API (local + remote)"""
     proxy = config.get("proxy") if config.get("proxy", {}).get("enabled") else None
     results = []
     
-    # Test API
+    # Test local API
     try:
         api_host = config.get("api_host", config["host"])
         api_port = config.get("api_port", 8765)
-        body, _ = http_request(f"http://{api_host}:{api_port}/", proxy=proxy, timeout=5)
-        results.append("✓ Directory API: OK")
+        body, _ = http_request(f"http://{api_host}:{api_port}/", proxy=proxy, timeout=LOCAL_TIMEOUT)
+        results.append("✓ Local API: OK")
     except Exception as e:
-        results.append(f"✗ Directory API: {e}")
+        results.append(f"✗ Local API: {e}")
     
-    # Test Transmission
+    # Test local Transmission
     try:
         client = TransmissionClient(
             config["host"], config["port"],
@@ -284,9 +290,37 @@ def test_connection(config):
             proxy=proxy
         )
         client._request("session-get")
-        results.append("✓ Transmission: OK")
+        results.append("✓ Local Transmission: OK")
     except Exception as e:
-        results.append(f"✗ Transmission: {e}")
+        results.append(f"✗ Local Transmission: {e}")
+    
+    # Test remote if configured
+    remote = config.get("remote", {})
+    r_user = remote.get("username") or config.get("username")
+    r_pass = remote.get("password") or config.get("password")
+    remote_headers = {}
+    if r_user and r_pass:
+        cred = base64.b64encode(f"{r_user}:{r_pass}".encode()).decode()
+        remote_headers["Authorization"] = f"Basic {cred}"
+
+    if remote.get("api_url"):
+        try:
+            body, _ = http_request(f"{remote['api_url']}/", headers=remote_headers, timeout=5)
+            results.append("✓ Remote API: OK")
+        except Exception as e:
+            results.append(f"✗ Remote API: {e}")
+    
+    if remote.get("transmission_url"):
+        try:
+            client = TransmissionClient(
+                url=remote["transmission_url"],
+                username=remote.get("username") or config.get("username"),
+                password=remote.get("password") or config.get("password"),
+            )
+            client._request("session-get")
+            results.append("✓ Remote Transmission: OK")
+        except Exception as e:
+            results.append(f"✗ Remote Transmission: {e}")
     
     proxy_status = "via proxy" if proxy else "direct"
     show_info(f"Connection Test ({proxy_status})\\n\\n" + "\\n".join(results))
@@ -321,7 +355,56 @@ def load_config():
     }
 
 
-def fetch_directories(api_host, api_port, proxy=None):
+LOCAL_TIMEOUT = 2  # seconds - very short for local network check
+
+
+def resolve_connection(config):
+    """Try local first (2s timeout), fall back to remote URLs.
+    Returns (api_base_url, transmission_client, mode_label, api_headers)"""
+    proxy = config.get("proxy") if config.get("proxy", {}).get("enabled") else None
+    api_host = config.get("api_host", config["host"])
+    api_port = config.get("api_port", 8765)
+    local_api_url = f"http://{api_host}:{api_port}"
+
+    # Try local
+    try:
+        http_request(f"{local_api_url}/", proxy=proxy, timeout=LOCAL_TIMEOUT)
+        # API reachable, return a client with normal timeout for actual use
+        client = TransmissionClient(
+            config["host"], config["port"],
+            config.get("username"), config.get("password"),
+            proxy=proxy, timeout=30
+        )
+        return local_api_url, client, "local", {}
+    except Exception:
+        pass
+
+    # Try remote
+    remote = config.get("remote", {})
+    remote_api = remote.get("api_url")
+    remote_rpc = remote.get("transmission_url")
+    if not remote_api or not remote_rpc:
+        raise Exception("Local unreachable and no remote configured")
+
+    # Build basic auth header for remote API
+    r_user = remote.get("username") or config.get("username")
+    r_pass = remote.get("password") or config.get("password")
+    api_headers = {}
+    if r_user and r_pass:
+        cred = base64.b64encode(f"{r_user}:{r_pass}".encode()).decode()
+        api_headers["Authorization"] = f"Basic {cred}"
+
+    try:
+        http_request(f"{remote_api}/", headers=api_headers, timeout=10)
+        client = TransmissionClient(
+            url=remote_rpc, username=r_user, password=r_pass,
+        )
+        return remote_api, client, "remote", api_headers
+    except Exception as e:
+        raise Exception(f"Both local and remote unreachable: {e}")
+
+
+def fetch_directories(api_base_url, proxy=None, headers=None):
     """Fetch directory options from the API, returns (dirs_list, tv_shows_list, tv_base_path)"""
     dirs = []
     tv_shows = []
@@ -329,12 +412,12 @@ def fetch_directories(api_host, api_port, proxy=None):
     
     try:
         # Movies
-        body, _ = http_request(f"http://{api_host}:{api_port}/movies", proxy=proxy, timeout=5)
+        body, _ = http_request(f"{api_base_url}/movies", proxy=proxy, headers=headers, timeout=5)
         data = json.loads(body)
         dirs.append(("Movies", data["path"]))
         
         # Downloads
-        body, _ = http_request(f"http://{api_host}:{api_port}/downloads", proxy=proxy, timeout=5)
+        body, _ = http_request(f"{api_base_url}/downloads", proxy=proxy, headers=headers, timeout=5)
         data = json.loads(body)
         dirs.append(("Downloads", data["path"]))
         
@@ -342,7 +425,7 @@ def fetch_directories(api_host, api_port, proxy=None):
         dirs.append(("── New TV Show Folder ──", "__NEW_TV__"))
         
         # TV shows
-        body, _ = http_request(f"http://{api_host}:{api_port}/tvshows", proxy=proxy, timeout=5)
+        body, _ = http_request(f"{api_base_url}/tvshows", proxy=proxy, headers=headers, timeout=5)
         data = json.loads(body)
         tv_base = data["base"]
         for show in data["shows"]:
@@ -472,8 +555,17 @@ def main():
     api_port = config.get("api_port", 8765)
     proxy = config.get("proxy") if config.get("proxy", {}).get("enabled") else None
     
+    # Resolve connection: try local first (2s), then remote
+    try:
+        api_base_url, client, conn_mode, api_headers = resolve_connection(config)
+    except Exception as e:
+        show_error(f"Cannot connect:\\n\\n{e}")
+        sys.exit(1)
+    
     # Fetch directories
-    dir_options, tv_shows, tv_base = fetch_directories(api_host, api_port, proxy)
+    dir_options, tv_shows, tv_base = fetch_directories(
+        api_base_url, proxy if conn_mode == "local" else None, api_headers
+    )
     display_names = [d[0] for d in dir_options]
     
     # Get torrent name
@@ -557,16 +649,12 @@ def main():
     
     # Add torrent
     try:
-        client = TransmissionClient(
-            config["host"], config["port"],
-            config.get("username"), config.get("password"),
-            proxy=proxy
-        )
         result = client.add_torrent(torrent_source, selected_path)
         
         if "torrent-added" in result:
             name = result["torrent-added"].get("name", torrent_name)
-            show_info(f"✓ Torrent added!\\n\\n{name}\\n\\nDownloading to:\\n{selected_path}")
+            mode_tag = " (remote)" if conn_mode == "remote" else ""
+            show_info(f"✓ Torrent added!{mode_tag}\\n\\n{name}\\n\\nDownloading to:\\n{selected_path}")
         elif "torrent-duplicate" in result:
             name = result["torrent-duplicate"].get("name", torrent_name)
             show_error(f"Torrent already exists:\\n\\n{name}")
