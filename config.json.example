@@ -6,11 +6,10 @@
     "api_host": "192.168.1.100",
     "api_port": 8765,
     "remote": {
-        "transmission_url": "https://transmission.nellika.io/transmission/rpc",
         "api_url": "https://torrent-add.nellika.io",
         "username": "",
         "password": "",
-        "_comment": "Fallback when local IP is unreachable (2s timeout)"
+        "_comment": "Fallback when local IP is unreachable (2s timeout). Torrent adding goes through the API."
     },
     "proxy": {
         "enabled": false,

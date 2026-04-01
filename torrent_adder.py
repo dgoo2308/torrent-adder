@@ -130,9 +130,49 @@ class TransmissionClient:
         return result.get("arguments", {})
 
 
+class APITorrentClient:
+    """Client that adds torrents via the server API (for remote mode)"""
+    def __init__(self, api_base_url, headers=None):
+        self.api_base_url = api_base_url
+        self.headers = headers or {}
+
+    def add_torrent(self, torrent_source, download_dir):
+        body = {"download_dir": download_dir}
+        if torrent_source.startswith("magnet:"):
+            body["magnet"] = torrent_source
+        else:
+            with open(torrent_source, "rb") as f:
+                body["metainfo"] = base64.b64encode(f.read()).decode()
+
+        headers = {**self.headers, "Content-Type": "application/json"}
+        resp, _ = http_request(
+            f"{self.api_base_url}/torrent/add",
+            data=json.dumps(body).encode(),
+            headers=headers,
+            timeout=30
+        )
+        return json.loads(resp)
+
+
 def osascript(script):
     result = subprocess.run(["osascript", "-e", script], capture_output=True, text=True)
     return result.stdout.strip(), result.returncode
+
+
+def show_progress(message):
+    """Show a non-blocking progress dialog, returns process handle to dismiss later"""
+    script = f'display dialog "{message}" with title "Torrent Adder" buttons {{"Cancel"}} giving up after 120 with icon note'
+    return subprocess.Popen(["osascript", "-e", script], stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+
+
+def dismiss_progress(proc):
+    """Dismiss progress dialog. Returns False if user clicked Cancel."""
+    if proc.poll() is None:
+        proc.terminate()
+        proc.wait()
+        return True
+    # Process already exited — user clicked Cancel
+    return proc.returncode == 0
 
 
 def show_error(message):
@@ -214,8 +254,8 @@ def show_settings_dialog(config):
     ]
     
     remote = config.get("remote", {})
-    if remote.get("transmission_url"):
-        status_lines.append(f"Remote: {remote['transmission_url']}")
+    if remote.get("api_url"):
+        status_lines.append(f"Remote API: {remote['api_url']}")
     
     if proxy_configured:
         proxy_status = "ON" if proxy_enabled else "OFF"
@@ -309,18 +349,15 @@ def test_connection(config):
             results.append("✓ Remote API: OK")
         except Exception as e:
             results.append(f"✗ Remote API: {e}")
-    
-    if remote.get("transmission_url"):
+
+        # Test remote Transmission (via API proxy)
         try:
-            client = TransmissionClient(
-                url=remote["transmission_url"],
-                username=remote.get("username") or config.get("username"),
-                password=remote.get("password") or config.get("password"),
-            )
-            client._request("session-get")
-            results.append("✓ Remote Transmission: OK")
+            body, _ = http_request(f"{remote['api_url']}/torrents", headers=remote_headers, timeout=5)
+            data = json.loads(body)
+            count = len(data.get("torrents", []))
+            results.append(f"✓ Remote Transmission (via API): OK ({count} torrents)")
         except Exception as e:
-            results.append(f"✗ Remote Transmission: {e}")
+            results.append(f"✗ Remote Transmission (via API): {e}")
     
     proxy_status = "via proxy" if proxy else "direct"
     show_info(f"Connection Test ({proxy_status})\\n\\n" + "\\n".join(results))
@@ -379,11 +416,10 @@ def resolve_connection(config):
     except Exception:
         pass
 
-    # Try remote
+    # Try remote — use API for everything (directories + torrent add)
     remote = config.get("remote", {})
     remote_api = remote.get("api_url")
-    remote_rpc = remote.get("transmission_url")
-    if not remote_api or not remote_rpc:
+    if not remote_api:
         raise Exception("Local unreachable and no remote configured")
 
     # Build basic auth header for remote API
@@ -396,9 +432,7 @@ def resolve_connection(config):
 
     try:
         http_request(f"{remote_api}/", headers=api_headers, timeout=10)
-        client = TransmissionClient(
-            url=remote_rpc, username=r_user, password=r_pass,
-        )
+        client = APITorrentClient(remote_api, api_headers)
         return remote_api, client, "remote", api_headers
     except Exception as e:
         raise Exception(f"Both local and remote unreachable: {e}")
@@ -556,16 +590,20 @@ def main():
     proxy = config.get("proxy") if config.get("proxy", {}).get("enabled") else None
     
     # Resolve connection: try local first (2s), then remote
+    progress = show_progress("Connecting...")
     try:
         api_base_url, client, conn_mode, api_headers = resolve_connection(config)
     except Exception as e:
+        dismiss_progress(progress)
         show_error(f"Cannot connect:\\n\\n{e}")
         sys.exit(1)
-    
+
     # Fetch directories
     dir_options, tv_shows, tv_base = fetch_directories(
         api_base_url, proxy if conn_mode == "local" else None, api_headers
     )
+    if not dismiss_progress(progress):
+        sys.exit(0)  # User cancelled
     display_names = [d[0] for d in dir_options]
     
     # Get torrent name
@@ -648,9 +686,11 @@ def main():
         sys.exit(1)
     
     # Add torrent
+    progress = show_progress("Adding torrent...")
     try:
         result = client.add_torrent(torrent_source, selected_path)
-        
+        dismiss_progress(progress)
+
         if "torrent-added" in result:
             name = result["torrent-added"].get("name", torrent_name)
             mode_tag = " (remote)" if conn_mode == "remote" else ""
@@ -664,6 +704,7 @@ def main():
             show_info(f"Torrent added to:\\n{selected_path}")
             
     except Exception as e:
+        dismiss_progress(progress)
         show_error(f"Failed to add torrent:\\n\\n{e}")
         sys.exit(1)
 

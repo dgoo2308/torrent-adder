@@ -1,0 +1,14 @@
+{
+    "port": 8765,
+    "directories": {
+        "movies": "/media/lacie/Media/Movies",
+        "tvshows": "/media/lacie/Media/TV Shows",
+        "downloads": "/media/lacie/Downloads"
+    },
+    "transmission": {
+        "host": "localhost",
+        "port": 9091,
+        "username": "",
+        "password": ""
+    }
+}
